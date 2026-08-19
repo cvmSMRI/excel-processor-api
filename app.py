@@ -1,60 +1,54 @@
 from flask import Flask, request, send_file
 import pandas as pd
+import openpyxl
 import io
 
 app = Flask(__name__)
 
-# Target columns you want to extract from each sheet
-KSP_COLUMNS = [
-    "SKU No.", "Item Description", "Vendor Name", 
-    "Unit Cost", "Category", "Status"
-]
+# List your required target columns for each file
+KSP_COLUMNS = ["SKU No.", "Item Description", "Vendor Name", "Unit Cost", "Category", "Status"]
+TWP_COLUMNS = ["SKU No.", "Selling Price", "Stock Qty", "Branch Code", "Reorder Level"]
 
-TWP_COLUMNS = [
-    "SKU No.", "Selling Price", "Stock Qty", 
-    "Branch Code", "Reorder Level"
-]
-
-@app.route('/process-excel', methods=['POST'])
-def process_excel():
+@app.route('/process-template', methods=['POST'])
+def process_template():
     try:
-        # Check if file was included in the request
-        if 'file' not in request.files:
-            return {"error": "No file uploaded"}, 400
+        # Check that both CSV files and the Template are passed in the request
+        if 'ksp_file' not in request.files or 'twp_file' not in request.files or 'template_file' not in request.files:
+            return {"error": "Missing required files (ksp_file, twp_file, or template_file)"}, 400
         
-        uploaded_file = request.files['file']
-        
-        # Load the uploaded Excel workbook
-        excel_reader = pd.ExcelFile(uploaded_file)
-        
-        # Output buffer to write the clean Excel file in memory
+        ksp_csv = request.files['ksp_file']
+        twp_csv = request.files['twp_file']
+        template_excel = request.files['template_file']
+
+        # 1. Read CSV files using Pandas
+        df_ksp = pd.read_csv(ksp_csv)
+        df_twp = pd.read_csv(twp_csv)
+
+        # 2. Filter target columns
+        ksp_filtered = df_ksp[[col for col in KSP_COLUMNS if col in df_ksp.columns]]
+        twp_filtered = df_twp[[col for col in TWP_COLUMNS if col in df_twp.columns]]
+
+        # 3. Load the SharePoint Excel template into OpenPyXL/Pandas writer
         output_stream = io.BytesIO()
         
         with pd.ExcelWriter(output_stream, engine='openpyxl') as writer:
+            # Load existing worksheets from your template
+            writer.workbook = openpyxl.load_workbook(template_excel)
             
-            # --- Process KSP Sheet ---
-            if 'KSP' in excel_reader.sheet_names:
-                df_ksp = pd.read_excel(excel_reader, sheet_name='KSP')
-                # Filter only existing target columns
-                ksp_cols_exist = [col for col in KSP_COLUMNS if col in df_ksp.columns]
-                df_ksp_filtered = df_ksp[ksp_cols_exist]
-                df_ksp_filtered.to_excel(writer, sheet_name='KSP Data', index=False)
-            
-            # --- Process TWP Sheet ---
-            if 'TWP' in excel_reader.sheet_names:
-                df_twp = pd.read_excel(excel_reader, sheet_name='TWP')
-                twp_cols_exist = [col for col in TWP_COLUMNS if col in df_twp.columns]
-                df_twp_filtered = df_twp[twp_cols_exist]
-                df_twp_filtered.to_excel(writer, sheet_name='TWP Data', index=False)
+            # Write data into the respective sheet tabs
+            if 'KSP' in writer.workbook.sheetnames:
+                ksp_filtered.to_excel(writer, sheet_name='KSP', index=False)
+            if 'TWP' in writer.workbook.sheetnames:
+                twp_filtered.to_excel(writer, sheet_name='TWP', index=False)
 
         output_stream.seek(0)
-        
-        # Return the processed file directly as an .xlsx download
+
+        # 4. Return the populated Excel template file
         return send_file(
             output_stream,
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             as_attachment=True,
-            download_name='Processed_Summary.xlsx'
+            download_name='Final_Populated_Report.xlsx'
         )
 
     except Exception as e:
